@@ -6,46 +6,45 @@
 #ifdef AUDIO_OAL_USE_SNDFILE
 #pragma comment( lib, "libsndfile-1.lib" )
 #endif
-#ifdef AUDIO_OAL_USE_MPG123
-#pragma comment( lib, "libmpg123-0.lib" )
-#endif
 #endif
 #ifdef AUDIO_OAL_USE_SNDFILE
 #include <sndfile.h>
 #endif
-#ifdef AUDIO_OAL_USE_MPG123
-#include <mpg123.h>
-#endif
+
 #ifdef AUDIO_OAL_USE_OPUS
 #include <opusfile.h>
 #endif
+
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3_ex.h"
 
 #include <queue>
 #include <utility>
 
 #ifdef MULTITHREADED_AUDIO
-#include <iostream>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
+#define XPLAT_PTHREAD
+#include "crossplatform.h"
 #include "MusicManager.h"
 #include "stream.h"
 
-std::thread	gAudioThread;
-std::mutex gAudioThreadQueueMutex;
-std::condition_variable gAudioThreadCv;
+pthread_t gAudioThread;
+pthread_mutex_t gAudioThreadQueueMutex;
+pthread_cond_t gAudioThreadCv;
 bool gAudioThreadTerm = false;
 std::queue<CStream*> gStreamsToProcess; // values are not unique, we will handle that ourself
 std::queue<std::pair<IDecoder*, void*>> gStreamsToClose;
-#else
-#include "stream.h"
-#endif
 
-#include "sampman.h"
+#else
+
+#include "stream.h"
 
 #ifndef _WIN32
 #include "crossplatform.h"
 #endif
+
+#endif // not MULTITHREADED_AUDIO
+
+#include "sampman.h"
 
 /*
 As we ran onto an issue of having different volume levels for mono streams
@@ -61,7 +60,7 @@ class CSortStereoBuffer
 	uint16* PcmBuf;
 	size_t BufSize;
 //#ifdef MULTITHREADED_AUDIO
-//	std::mutex Mutex;
+//	pthread_mutex_t Mutex;
 //#endif
 
 public:
@@ -91,12 +90,17 @@ public:
 	void SortStereo(void* buf, size_t size)
 	{
 //#ifdef MULTITHREADED_AUDIO
-//		std::lock_guard<std::mutex> lock(Mutex);
+//		pthread_mutex_lock(&Mutex);
 //#endif
 		uint16* InBuf = (uint16*)buf;
 		uint16* OutBuf = GetBuffer(size);
 
-		if (!OutBuf) return;
+		if (!OutBuf) {
+//#ifdef MULTITHREADED_AUDIO
+//			pthread_mutex_unlock(&Mutex);
+//#endif
+			return;
+		}
 
 		size_t rightStart = size / 4;
 		for (size_t i = 0; i < size / 4; i++)
@@ -106,6 +110,9 @@ public:
 		}
 
 		memcpy(InBuf, OutBuf, size);
+//#ifdef MULTITHREADED_AUDIO
+//			pthread_mutex_unlock(&Mutex);
+//#endif
 	}
 
 };
@@ -500,68 +507,35 @@ public:
 };
 #endif
 
-#ifdef AUDIO_OAL_USE_MPG123
-
 class CMP3File : public IDecoder
 {
-protected:
-	mpg123_handle *m_pMH;
+	mp3dec_ex_t m_handle;
+	mp3dec_frame_info_t m_frameInfo;
 	bool m_bOpened;
 	uint32 m_nRate;
 	uint32 m_nChannels;
-	const char* m_pPath;
-	bool m_bFileNotOpenedYet;
 public:
 	CMP3File(const char *path) :
-		m_pMH(nil),
 		m_bOpened(false),
 		m_nRate(0),
-		m_nChannels(0),
-		m_pPath(path),
-		m_bFileNotOpenedYet(false)
+		m_nChannels(0)
 	{
-		m_pMH = mpg123_new(nil, nil);
-		if ( m_pMH )
+		int res = mp3dec_ex_open(&m_handle, path, MP3D_SEEK_TO_SAMPLE);
+		if (res == 0)
 		{
-			mpg123_param(m_pMH, MPG123_FLAGS, MPG123_SEEKBUFFER | MPG123_GAPLESS, 0.0);
-
 			m_bOpened = true;
-			m_bFileNotOpenedYet = true;
-			// It's possible to move this to audioFileOpsThread(), but effect isn't noticable + probably not compatible with our current cutscene audio handling
-#if 1
-			FileOpen();
-#endif
+			m_nRate = m_handle.info.hz;
+			m_nChannels = m_handle.info.channels;
 		}
 	}
 	
 	void FileOpen()
 	{
-		if(!m_bFileNotOpenedYet) return;
-
-		long rate = 0;
-		int channels = 0;
-		int encoding = 0;
-		m_bOpened = mpg123_open(m_pMH, m_pPath) == MPG123_OK
-		        && mpg123_getformat(m_pMH, &rate, &channels, &encoding) == MPG123_OK;
-
-		m_nRate = rate;
-		m_nChannels = channels;
-
-		if(IsOpened()) {
-			mpg123_format_none(m_pMH);
-			mpg123_format(m_pMH, rate, channels, encoding);
-		}
-		m_bFileNotOpenedYet = false;
 	}
 
 	~CMP3File()
 	{
-		if ( m_pMH )
-		{
-			mpg123_close(m_pMH);
-			mpg123_delete(m_pMH);
-			m_pMH = nil;
-		}
+		mp3dec_ex_close(&m_handle);
 	}
 	
 	bool IsOpened()
@@ -571,13 +545,13 @@ public:
 	
 	uint32 GetSampleSize()
 	{
-		return sizeof(uint16);
+		return sizeof(mp3d_sample_t); // uint16
 	}
 	
 	uint32 GetSampleCount()
 	{
-		if ( !IsOpened() || m_bFileNotOpenedYet ) return 0;
-		return mpg123_length(m_pMH);
+		if ( !IsOpened() ) return 0;
+		return m_handle.samples;
 	}
 	
 	uint32 GetSampleRate()
@@ -592,33 +566,35 @@ public:
 	
 	void Seek(uint32 milliseconds)
 	{
-		if ( !IsOpened() || m_bFileNotOpenedYet ) return;
-		mpg123_seek(m_pMH, ms2samples(milliseconds), SEEK_SET);
+		if ( !IsOpened() ) return;
+		mp3dec_ex_seek(&m_handle, ms2samples(milliseconds));
 	}
 	
 	uint32 Tell()
 	{
-		if ( !IsOpened() || m_bFileNotOpenedYet ) return 0;
-		return samples2ms(mpg123_tell(m_pMH));
+		if ( !IsOpened() ) return 0;
+		return samples2ms(m_handle.cur_sample);
 	}
 	
 	uint32 Decode(void *buffer)
 	{
-		if ( !IsOpened() || m_bFileNotOpenedYet ) return 0;
-		
-		size_t size;
-		int err = mpg123_read(m_pMH, (unsigned char *)buffer, GetBufferSize(), &size);
+		if ( !IsOpened() ) return 0;
+
+		size_t read_samples = mp3dec_ex_read(&m_handle, (mp3d_sample_t*)buffer, GetBufferSamples());
+		if (read_samples == 0)
+			return 0;
+
+		size_t read_bytes = read_samples * GetSampleSize();
+
 #if defined(__LP64__) || defined(_WIN64)
-		assert("We can't handle audio files more then 2 GB yet :shrug:" && (size < UINT32_MAX));
+		assert("We can't handle this big audio files yet :shrug:" && (read_bytes < UINT32_MAX));
 #endif
-		if (err != MPG123_OK && err != MPG123_DONE) return 0;
 		if (GetChannels() == 2)
-			SortStereoBuffer.SortStereo(buffer, size);
-		return (uint32)size;
+			SortStereoBuffer.SortStereo(buffer, read_bytes);
+		return (uint32)read_bytes;
 	}
 };
 
-#endif
 #define VAG_LINE_SIZE (0x10)
 #define VAG_SAMPLES_IN_LINE (28)
 
@@ -1013,28 +989,33 @@ CStream::FlagAsToBeProcessed(bool close)
 	if (!close && MusicManager.m_nMusicMode == MUSICMODE_CUTSCENE)
 		return;
 
-	gAudioThreadQueueMutex.lock();
+	pthread_mutex_lock(&gAudioThreadQueueMutex);
 	if (close)
 		gStreamsToClose.push(std::pair<IDecoder*, void*>(m_pSoundFile ? m_pSoundFile : nil, m_pBuffer ? m_pBuffer : nil));
 	else
 		gStreamsToProcess.push(this);
 	
-	gAudioThreadQueueMutex.unlock();
+	pthread_mutex_unlock(&gAudioThreadQueueMutex);
 
-	gAudioThreadCv.notify_one();
+	pthread_cond_broadcast(&gAudioThreadCv);
 }
 
-void audioFileOpsThread()
+void* audioFileOpsThread(void* arg)
 {
 	do
 	{
 		CStream *stream;
 		{
 			// Just a semaphore
-			std::unique_lock<std::mutex> queueMutex(gAudioThreadQueueMutex);
-			gAudioThreadCv.wait(queueMutex, [] { return gStreamsToProcess.size() > 0 || gStreamsToClose.size() > 0 || gAudioThreadTerm; });
-			if (gAudioThreadTerm)
-				return;
+			pthread_mutex_lock(&gAudioThreadQueueMutex);
+
+			while (gStreamsToProcess.size() == 0 && gStreamsToClose.size() == 0 && !gAudioThreadTerm)
+				pthread_cond_wait(&gAudioThreadCv, &gAudioThreadQueueMutex);
+
+			if (gAudioThreadTerm) {
+				pthread_mutex_unlock(&gAudioThreadQueueMutex);
+				return nil;
+			}
 
 			if (!gStreamsToClose.empty()) {
 				auto streamToClose = gStreamsToClose.front();
@@ -1051,19 +1032,22 @@ void audioFileOpsThread()
 			if (!gStreamsToProcess.empty()) {
 				stream = gStreamsToProcess.front();
 				gStreamsToProcess.pop();
-			} else
+			} else {
+				pthread_mutex_unlock(&gAudioThreadQueueMutex);
 				continue;
+			}
+
+			pthread_mutex_unlock(&gAudioThreadQueueMutex);
 		}
 
-		std::unique_lock<std::mutex> lock(stream->m_mutex);
+		pthread_mutex_lock(&stream->m_mutex);
 
 		std::pair<ALuint, ALuint> buffers, *lastBufAddr;
 		bool insertBufsAfterCheck = false;
 
 		do {
-			if (!stream->IsOpened()) {
+			if (!stream->IsOpened())
 				break;
-			}
 
 			if (stream->m_bReset)
 				break;
@@ -1082,9 +1066,9 @@ void audioFileOpsThread()
 			if (stream->m_bDoSeek) {
 				stream->m_bDoSeek = false;
 				int pos = stream->m_SeekPos;
-				lock.unlock();
+				pthread_mutex_unlock(&stream->m_mutex);
 				stream->m_pSoundFile->Seek(pos);
-				lock.lock();
+				pthread_mutex_lock(&stream->m_mutex);
 
 				continue; // let's do the checks again, make sure we didn't miss anything while Seeking
 			}
@@ -1097,12 +1081,12 @@ void audioFileOpsThread()
 			if (!stream->m_fillBuffers.empty()) {
 				lastBufAddr = &stream->m_fillBuffers.front();
 				buffers = *lastBufAddr;
-				lock.unlock();
+				pthread_mutex_unlock(&stream->m_mutex);
 
 				ALuint alBuffers[2] = {buffers.first, buffers.second}; // left - right
 				bool filled = stream->FillBuffer(alBuffers);
 				
-				lock.lock();
+				pthread_mutex_lock(&stream->m_mutex);
 			
 				// Make sure queue isn't touched after we released mutex
 				if (!stream->m_fillBuffers.empty() && lastBufAddr == &stream->m_fillBuffers.front()) {
@@ -1115,32 +1099,33 @@ void audioFileOpsThread()
 
 		} while (true);
 
+		pthread_mutex_unlock(&stream->m_mutex);
+
 	} while(true);
+
+	return nil;
 }
 #endif
 
 void CStream::Initialise()
 {
-#ifdef AUDIO_OAL_USE_MPG123
-	mpg123_init();
-#endif
 #ifdef MULTITHREADED_AUDIO
-	gAudioThread = std::thread(audioFileOpsThread);
+	pthread_mutex_init(&gAudioThreadQueueMutex, NULL);
+	pthread_cond_init(&gAudioThreadCv, NULL);
+	pthread_create(&gAudioThread, NULL, &audioFileOpsThread, NULL);
 #endif
 }
 
 void CStream::Terminate()
 {
-#ifdef AUDIO_OAL_USE_MPG123
-	mpg123_exit();
-#endif
 #ifdef MULTITHREADED_AUDIO
-	gAudioThreadQueueMutex.lock();
+	pthread_mutex_lock(&gAudioThreadQueueMutex);
 	gAudioThreadTerm = true;
-	gAudioThreadQueueMutex.unlock();
+	pthread_mutex_unlock(&gAudioThreadQueueMutex);
 
-	gAudioThreadCv.notify_one();
-	gAudioThread.join();
+	pthread_cond_broadcast(&gAudioThreadCv); 
+	void *status;
+	pthread_join(gAudioThread, &status);
 #endif
 }
 
@@ -1163,6 +1148,9 @@ CStream::CStream(ALuint *sources, ALuint (&buffers)[NUM_STREAMBUFFERS]) :
 	m_nLoopCount(1)
 	
 {
+#ifdef MULTITHREADED_AUDIO
+	pthread_mutex_init(&m_mutex, NULL);
+#endif
 }
 
 bool CStream::Open(const char* filename, uint32 overrideSampleRate)
@@ -1170,7 +1158,7 @@ bool CStream::Open(const char* filename, uint32 overrideSampleRate)
 	if (IsOpened()) return false;
 
 #ifdef MULTITHREADED_AUDIO
-	std::unique_lock<std::mutex> lock(m_mutex);
+	pthread_mutex_lock(&m_mutex);
 
 	m_bDoSeek = false;
 	m_SeekPos = 0;
@@ -1205,10 +1193,8 @@ bool CStream::Open(const char* filename, uint32 overrideSampleRate)
 #else
 		m_pSoundFile = new CWavFile(m_aFilename);
 #endif
-#ifdef AUDIO_OAL_USE_MPG123
 	else if (!strcasecmp(&m_aFilename[strlen(m_aFilename) - strlen(".mp3")], ".mp3"))
 		m_pSoundFile = new CMP3File(m_aFilename);
-#endif
 	else if (!strcasecmp(&m_aFilename[strlen(m_aFilename) - strlen(".vb")], ".VB"))
 		m_pSoundFile = new CVbFile(m_aFilename, overrideSampleRate);
 #ifdef AUDIO_OAL_USE_OPUS
@@ -1235,9 +1221,13 @@ bool CStream::Open(const char* filename, uint32 overrideSampleRate)
 		}
 #ifdef MULTITHREADED_AUDIO
 		m_bIExist = true;
+		pthread_mutex_unlock(&m_mutex);
 #endif
 		return true;
 	}
+#ifdef MULTITHREADED_AUDIO
+	pthread_mutex_unlock(&m_mutex);
+#endif
 	return false;
 }
 
@@ -1252,13 +1242,15 @@ void CStream::Close()
 
 #ifdef MULTITHREADED_AUDIO
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		pthread_mutex_lock(&m_mutex);
 
 		Stop();
 		ClearBuffers();
 		m_bIExist = false;
 		std::queue<std::pair<ALuint, ALuint>>().swap(m_fillBuffers);
 		tsQueue<std::pair<ALuint, ALuint>>().swapNts(m_queueBuffers); // TSness not required, mutex is acquired
+
+		pthread_mutex_unlock(&m_mutex);
 	}
 
 	FlagAsToBeProcessed(true);
@@ -1309,11 +1301,14 @@ bool CStream::IsPlaying()
 			return true;
 
 #ifdef MULTITHREADED_AUDIO
-		std::lock_guard<std::mutex> lock(m_mutex);
+		pthread_mutex_lock(&m_mutex);
 
 		// Streams are designed in such a way that m_fillBuffers and m_queueBuffers will be *always* filled if audio is playing, and mutex is acquired
-		if (!m_fillBuffers.empty() || !m_queueBuffers.emptyNts())
+		if (!m_fillBuffers.empty() || !m_queueBuffers.emptyNts()) {
+			pthread_mutex_unlock(&m_mutex);
 			return true;
+		}
+		pthread_mutex_unlock(&m_mutex);
 #endif
 	}
 	
@@ -1391,7 +1386,7 @@ void CStream::SetPosMS(uint32 nPos)
 	if ( !IsOpened() ) return;
 	
 #ifdef MULTITHREADED_AUDIO
-	std::lock_guard<std::mutex> lock(m_mutex);
+	pthread_mutex_lock(&m_mutex);
 
 	std::queue<std::pair<ALuint, ALuint>>().swap(m_fillBuffers);
 	tsQueue<std::pair<ALuint, ALuint>>().swapNts(m_queueBuffers); // TSness not required, second thread always access it when stream mutex acquired
@@ -1405,7 +1400,10 @@ void CStream::SetPosMS(uint32 nPos)
 		m_pSoundFile->Seek(nPos);
 	}	
 	ClearBuffers();
-	
+
+#ifdef MULTITHREADED_AUDIO
+	pthread_mutex_unlock(&m_mutex);
+#endif
 	// adding to gStreamsToProcess not needed, someone always calls Start() / BuffersShouldBeFilled() after SetPosMS
 }
 
@@ -1518,7 +1516,7 @@ bool CStream::Setup(bool imSureQueueIsEmpty, bool lock)
 	{
 #ifdef MULTITHREADED_AUDIO
 		if (lock)
-			m_mutex.lock();
+			pthread_mutex_lock(&m_mutex);
 #endif
 
 		if (!imSureQueueIsEmpty) {
@@ -1534,7 +1532,7 @@ bool CStream::Setup(bool imSureQueueIsEmpty, bool lock)
 		}
 
 		if (lock)
-			m_mutex.unlock();
+			pthread_mutex_unlock(&m_mutex);
 #else
 		m_pSoundFile->Seek(0);
 #endif
@@ -1593,10 +1591,15 @@ void CStream::Start()
 	if ( !HasSource() ) return;
 	
 #ifdef MULTITHREADED_AUDIO
-	std::lock_guard<std::mutex> lock(m_mutex);
+	pthread_mutex_lock(&m_mutex);
 	tsQueue<std::pair<ALuint, ALuint>>().swapNts(m_queueBuffers); // TSness not required, second thread always access it when stream mutex acquired
 #endif
+
 	BuffersShouldBeFilled();
+
+#ifdef MULTITHREADED_AUDIO
+	pthread_mutex_unlock(&m_mutex);
+#endif
 }
 
 void CStream::Stop()
@@ -1658,7 +1661,7 @@ void CStream::Update()
 		if (m_nLoopCount != 1 && m_bActive && totalBuffers[0] == 0)
 		{
 #ifdef MULTITHREADED_AUDIO
-			std::lock_guard<std::mutex> lock(m_mutex);
+			pthread_mutex_lock(&m_mutex);
 
 			if (m_fillBuffers.empty() && m_queueBuffers.emptyNts()) // we already acquired stream mutex, which is enough for second thread. thus Nts variant
 #endif
@@ -1668,6 +1671,9 @@ void CStream::Update()
 				if (m_nLoopCount != 0)
 					m_nLoopCount--;
 			}
+#ifdef MULTITHREADED_AUDIO
+			pthread_mutex_unlock(&m_mutex);
+#endif
 		}
 		else
 		{
@@ -1689,7 +1695,7 @@ void CStream::Update()
 			if (m_bActive && buffersProcessed[1])
 			{
 #ifdef MULTITHREADED_AUDIO
-				m_mutex.lock();
+				pthread_mutex_lock(&m_mutex);
 #endif
 				while (!tempFillBuffer.empty()) {
 					auto elem = tempFillBuffer.front();
@@ -1697,7 +1703,7 @@ void CStream::Update()
 					buffersQueuedButNotStarted = BufferShouldBeFilledAndQueued(&elem);
 				}
 #ifdef MULTITHREADED_AUDIO
-				m_mutex.unlock();
+				pthread_mutex_unlock(&m_mutex);
 				FlagAsToBeProcessed();
 #endif
 
@@ -1721,7 +1727,7 @@ void CStream::ProviderInit()
 			SetLoopCount(m_nLoopCount);
 			SetPosMS(m_nPosBeforeReset);
 #ifdef MULTITHREADED_AUDIO
-			std::unique_lock<std::mutex> lock(m_mutex);
+			pthread_mutex_lock(&m_mutex);
 #endif
 			if(m_bActive)
 				BuffersShouldBeFilled();
@@ -1733,17 +1739,20 @@ void CStream::ProviderInit()
 
 		} else {
 #ifdef MULTITHREADED_AUDIO
-			std::unique_lock<std::mutex> lock(m_mutex);
+			pthread_mutex_lock(&m_mutex);
 #endif
 			m_bReset = false;
 		}
+#ifdef MULTITHREADED_AUDIO
+		pthread_mutex_unlock(&m_mutex);
+#endif
 	}
 }
 
 void CStream::ProviderTerm()
 {
 #ifdef MULTITHREADED_AUDIO
-	std::lock_guard<std::mutex> lock(m_mutex);
+	pthread_mutex_lock(&m_mutex);
 
 	// unlike Close() we will reuse this stream, so clearing queues are important.
 	std::queue<std::pair<ALuint, ALuint>>().swap(m_fillBuffers);
@@ -1754,6 +1763,9 @@ void CStream::ProviderTerm()
 
 	Stop();
 	ClearBuffers();
+#ifdef MULTITHREADED_AUDIO
+	pthread_mutex_unlock(&m_mutex);
+#endif
 }
 	
 #endif

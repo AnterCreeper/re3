@@ -257,6 +257,7 @@ project "re3"
 	files { addSrcFiles("src/audio/oal") }
 	files { addSrcFiles("src/buildings") }
 	files { addSrcFiles("src/collision") }
+	files { addSrcFiles("src/external") }
 	files { addSrcFiles("src/control") }
 	files { addSrcFiles("src/core") }
 	files { addSrcFiles("src/entities") }
@@ -286,6 +287,7 @@ project "re3"
 	includedirs { "src/audio/oal" }
 	includedirs { "src/buildings" }
 	includedirs { "src/collision" }
+	includedirs { "src/external" }
 	includedirs { "src/control" }
 	includedirs { "src/core" }
 	includedirs { "src/entities" }
@@ -318,8 +320,8 @@ project "re3"
 
 	filter "platforms:*mss"
 		defines { "AUDIO_MSS" }
-		includedirs { "vendor/milessdk/include" }
-		libdirs { "vendor/milessdk/lib" }
+		includedirs { "src/external/milessdk" }
+		libdirs { "src/external/milessdk" }
 
 	if _OPTIONS["with-opus"] then
 		filter "platforms:win*"
@@ -367,27 +369,24 @@ project "re3"
 
 	filter "platforms:win*oal"
 		includedirs { "vendor/openal-soft/include" }
-		includedirs { "vendor/libsndfile/include" }
-		includedirs { "vendor/mpg123/include" }
+		includedirs { "src/external/libsndfile/include" }
 
 	filter "platforms:win-x86*oal"
-		libdirs { "vendor/mpg123/lib/Win32" }
-		libdirs { "vendor/libsndfile/lib/Win32" }
+		libdirs { "src/external/libsndfile/lib/Win32" }
 		libdirs { "vendor/openal-soft/libs/Win32" }
 
 	filter "platforms:win-amd64*oal"
-		libdirs { "vendor/mpg123/lib/Win64" }
-		libdirs { "vendor/libsndfile/lib/Win64" }
+		libdirs { "src/external/libsndfile/lib/Win64" }
 		libdirs { "vendor/openal-soft/libs/Win64" }
 
 	filter "platforms:linux*oal"
-		links { "openal", "mpg123", "sndfile", "pthread", "X11" }
+		links { "openal", "sndfile", "pthread", "X11" }
 
 	filter "platforms:bsd*oal"
-		links { "openal", "mpg123", "sndfile", "pthread", "X11" }
+		links { "openal", "sndfile", "pthread", "X11" }
 
 	filter "platforms:macosx*oal"
-		links { "openal", "mpg123", "sndfile", "pthread" }
+		links { "openal", "sndfile", "pthread" }
 		
 	filter "platforms:macosx-arm64-*oal"
 		includedirs { "/opt/homebrew/opt/openal-soft/include" }

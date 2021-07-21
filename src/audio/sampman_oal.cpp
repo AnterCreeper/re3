@@ -27,6 +27,10 @@
 #endif
 
 #include "common.h"
+#ifdef MULTITHREADED_AUDIO
+#define XPLAT_PTHREAD
+#include <queue>
+#endif
 #include "crossplatform.h"
 
 #include "sampman.h"
@@ -36,11 +40,6 @@
 #include "oal/channel.h"
 
 #include <utility>
-#ifdef MULTITHREADED_AUDIO
-#include <mutex>
-#include <queue>
-#include <condition_variable>
-#endif
 #include "oal/stream.h"
 
 #include "AudioManager.h"

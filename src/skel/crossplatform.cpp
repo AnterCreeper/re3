@@ -279,3 +279,129 @@ char* casepath(char const* path, bool checkPathFirst)
     return out;
 }
 #endif
+
+// pthread wrapper for Windows
+#if defined _MSC_VER
+
+#include <Windows.h>
+typedef CRITICAL_SECTION pthread_mutex_t;
+typedef void pthread_mutexattr_t;
+typedef void pthread_condattr_t;
+typedef void pthread_rwlockattr_t;
+typedef HANDLE pthread_t;
+typedef CONDITION_VARIABLE pthread_cond_t;
+
+int pthread_create(pthread_t *thread, void *attr, void * (__cdecl *start_routine) (void *), void *arg)
+{
+    if (thread == NULL || start_routine == NULL)
+        return 1;
+
+    *thread = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE) start_routine, arg, 0, NULL);
+    if (*thread == NULL)
+        return 1;
+    return 0;
+}
+
+int pthread_join(pthread_t thread, void **value_ptr)
+{
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    return 0;
+}
+
+int pthread_detach(pthread_t thread)
+{
+    return CloseHandle(thread) ? 0 : 1;
+}
+
+int pthread_mutex_init(pthread_mutex_t *mutex, pthread_mutexattr_t *attr)
+{
+    if (mutex == NULL)
+        return 1;
+
+    InitializeCriticalSection(mutex);
+    return 0;
+}
+
+int pthread_mutex_destroy(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL)
+        return 1;
+    DeleteCriticalSection(mutex);
+    return 0;
+}
+
+int pthread_mutex_lock(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL)
+        return 1;
+    EnterCriticalSection(mutex);
+    return 0;
+}
+
+int pthread_mutex_unlock(pthread_mutex_t *mutex)
+{
+    if (mutex == NULL)
+        return 1;
+    LeaveCriticalSection(mutex);
+    return 0;
+}
+
+int pthread_cond_init(pthread_cond_t *cond, pthread_condattr_t *attr)
+{
+    if (cond == NULL)
+        return 1;
+    InitializeConditionVariable(cond);
+    return 0;
+}
+
+int pthread_cond_destroy(pthread_cond_t *cond)
+{
+    /* Windows does not have a destroy for conditionals */
+    return 0;
+}
+
+static DWORD timespec_to_ms(const struct timespec *abstime)
+{
+    DWORD t;
+
+    if (abstime == NULL)
+        return INFINITE;
+
+    t = ((abstime->tv_sec - time(NULL)) * 1000) + (abstime->tv_nsec / 1000000);
+    if (t < 0)
+        t = 1;
+    return t;
+}
+
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
+        const struct timespec *abstime)
+{
+    if (cond == NULL || mutex == NULL)
+        return 1;
+    if (!SleepConditionVariableCS(cond, mutex, timespec_to_ms(abstime)))
+        return 1;
+    return 0;
+}
+
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
+{
+    return pthread_cond_timedwait(cond, mutex, NULL);
+}
+
+int pthread_cond_signal(pthread_cond_t *cond)
+{
+    if (cond == NULL)
+        return 1;
+    WakeConditionVariable(cond);
+    return 0;
+}
+
+int pthread_cond_broadcast(pthread_cond_t *cond)
+{
+    if (cond == NULL)
+        return 1;
+    WakeAllConditionVariable(cond);
+    return 0;
+}
+#endif

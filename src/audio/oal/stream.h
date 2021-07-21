@@ -59,26 +59,32 @@ public:
 template <typename T> class tsQueue
 {
 public:
-	tsQueue() : count(0) { }
+	tsQueue() : count(0) {
+		pthread_mutex_init(&m_mutex, NULL);
+	}
 	
 	void push(const T &value)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
+		pthread_mutex_lock(&m_mutex);
 		m_queue.push(value);
 		count++;
+		pthread_mutex_unlock(&m_mutex);
 	}
 
-    bool peekPop(T *retVal)
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        if (count == 0)
-            return false;
+	bool peekPop(T *retVal)
+	{
+		pthread_mutex_lock(&m_mutex);
+		if (count == 0) {
+			pthread_mutex_unlock(&m_mutex);
+			return false;
+		}
 
-        *retVal = m_queue.front();
-        m_queue.pop();
-        count--;
-        return true;
-    }
+		*retVal = m_queue.front();
+		m_queue.pop();
+		count--;
+		pthread_mutex_unlock(&m_mutex);
+		return true;
+	}
 
 	void swapNts(tsQueue<T> &replaceWith)
 	{
@@ -89,9 +95,11 @@ public:
 	/*
 	void swapTs(tsQueue<T> &replaceWith)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
-		std::lock_guard<std::mutex> lock2(replaceWith.m_mutex);
+		pthread_mutex_lock(&m_mutex);
+		pthread_mutex_lock(&replaceWith.m_mutex);
 		swapNts(replaceWith);
+		pthread_mutex_unlock(&replaceWith.m_mutex);
+		pthread_mutex_unlock(&m_mutex);
 	}
 	*/
 
@@ -103,14 +111,16 @@ public:
 	/*
 	bool emptyTs()
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
-		return emptyNts();
+		pthread_mutex_lock(&m_mutex);
+		bool isEmpty = emptyNts();
+		pthread_mutex_unlock(&m_mutex);
+		return isEmpty;
 	}
 	*/
 	
 	std::queue<T> m_queue;
 	int count;
-	mutable std::mutex m_mutex;
+	pthread_mutex_t m_mutex;
 };
 #endif
 class CStream
@@ -124,10 +134,9 @@ class CStream
 	
 public:
 #ifdef MULTITHREADED_AUDIO
-	std::mutex	m_mutex;
+	pthread_mutex_t m_mutex;
 	std::queue<std::pair<ALuint, ALuint>> m_fillBuffers; // left and right buffer
 	tsQueue<std::pair<ALuint, ALuint>> m_queueBuffers;
-//	std::condition_variable m_closeCv;
 	bool     m_bDoSeek;
 	uint32   m_SeekPos;
 	bool	 m_bIExist;

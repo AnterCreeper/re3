@@ -30,7 +30,16 @@ enum eWinVersion
 extern DWORD _dwOperatingSystemVersion;
 #define fcaseopen fopen
 #define caserename rename
-#else
+
+#if defined _MSC_VER && _MSC_VER < 1900
+struct timespec {
+    time_t tv_sec;
+    long tv_nsec;
+};
+#endif
+
+#else // ifndef _WIN32
+
 char *strupr(char *str);
 char *strlwr(char *str);
 
@@ -156,4 +165,38 @@ HANDLE FindFirstFile(const char*, WIN32_FIND_DATA*);
 bool FindNextFile(HANDLE, WIN32_FIND_DATA*);
 void FileTimeToSystemTime(time_t*, SYSTEMTIME*);
 void GetDateFormat(int, int, SYSTEMTIME*, int, char*, int);
+#endif
+
+#ifdef XPLAT_PTHREAD
+
+#ifdef _MSC_VER
+// pthread wrapper for Windows
+#include <Windows.h>
+
+typedef CRITICAL_SECTION pthread_mutex_t;
+typedef void pthread_mutexattr_t;
+typedef void pthread_condattr_t;
+typedef void pthread_rwlockattr_t;
+typedef HANDLE pthread_t;
+typedef CONDITION_VARIABLE pthread_cond_t;
+
+int pthread_create(pthread_t *thread, void *attr, void *(*start_routine)(void *), void *arg);
+int pthread_join(pthread_t thread, void **value_ptr);
+int pthread_detach(pthread_t);
+
+int pthread_mutex_init(pthread_mutex_t *mutex, pthread_mutexattr_t *attr);
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
+
+int pthread_cond_init(pthread_cond_t *cond, pthread_condattr_t *attr);
+int pthread_cond_destroy(pthread_cond_t *cond);
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex);
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime);
+int pthread_cond_signal(pthread_cond_t *cond);
+int pthread_cond_broadcast(pthread_cond_t *cond);
+#else
+#include <pthread.h>
+#endif
+
 #endif

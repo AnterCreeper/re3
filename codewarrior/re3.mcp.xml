@@ -305,16 +305,6 @@
                         <SETTING><NAME>FrameworkPath</NAME><VALUE>false</VALUE></SETTING>
                         <SETTING><NAME>HostFlags</NAME><VALUE>All</VALUE></SETTING>
                     </SETTING>
-                    <SETTING>
-                        <SETTING><NAME>SearchPath</NAME>
-                            <SETTING><NAME>Path</NAME><VALUE>..\src\extras</VALUE></SETTING>
-                            <SETTING><NAME>PathFormat</NAME><VALUE>Windows</VALUE></SETTING>
-                            <SETTING><NAME>PathRoot</NAME><VALUE>Project</VALUE></SETTING>
-                        </SETTING>
-                        <SETTING><NAME>Recursive</NAME><VALUE>true</VALUE></SETTING>
-                        <SETTING><NAME>FrameworkPath</NAME><VALUE>false</VALUE></SETTING>
-                        <SETTING><NAME>HostFlags</NAME><VALUE>All</VALUE></SETTING>
-                    </SETTING>
                 </SETTING>
                 <SETTING><NAME>SystemSearchPaths</NAME>
                     <SETTING>
@@ -6535,16 +6525,6 @@
                     <SETTING>
                         <SETTING><NAME>SearchPath</NAME>
                             <SETTING><NAME>Path</NAME><VALUE>..\sdk\rwsdk\include\d3d8</VALUE></SETTING>
-                            <SETTING><NAME>PathFormat</NAME><VALUE>Windows</VALUE></SETTING>
-                            <SETTING><NAME>PathRoot</NAME><VALUE>Project</VALUE></SETTING>
-                        </SETTING>
-                        <SETTING><NAME>Recursive</NAME><VALUE>true</VALUE></SETTING>
-                        <SETTING><NAME>FrameworkPath</NAME><VALUE>false</VALUE></SETTING>
-                        <SETTING><NAME>HostFlags</NAME><VALUE>All</VALUE></SETTING>
-                    </SETTING>
-                    <SETTING>
-                        <SETTING><NAME>SearchPath</NAME>
-                            <SETTING><NAME>Path</NAME><VALUE>..\src\extras</VALUE></SETTING>
                             <SETTING><NAME>PathFormat</NAME><VALUE>Windows</VALUE></SETTING>
                             <SETTING><NAME>PathRoot</NAME><VALUE>Project</VALUE></SETTING>
                         </SETTING>
@@ -13838,8 +13818,6 @@
                 <PATH>Physical.h</PATH>
                 <PATHFORMAT>Windows</PATHFORMAT>
             </FILEREF>
-        </GROUP>
-        <GROUP><NAME>extras</NAME>
         </GROUP>
         <GROUP><NAME>math</NAME>
             <FILEREF>

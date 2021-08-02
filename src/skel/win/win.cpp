@@ -102,6 +102,9 @@ static psGlobalType PsGlobal;
 	
 VALIDATE_SIZE(psGlobalType, 0x28);
 
+// Taken from Win 7 examples
+// #define MODERN_MOVIE_PLAYER
+
 // DirectShow interfaces
 IGraphBuilder *pGB = nil;
 IMediaControl *pMC = nil;
@@ -912,23 +915,27 @@ void WaitForState(FILTER_STATE State)
 /*
  *****************************************************************************
  */
+
+#ifdef MODERN_MOVIE_PLAYER
 void HandleGraphEvent(void)
 {
 	LONG evCode;
 	LONG_PTR evParam1, evParam2;
-	HRESULT hr=S_OK;
-	
-	ASSERT(pME != nil);
+
+	// Make sure that we don't access the media event interface
+	// after it has already been released.
+	if (!pME)
+		return;
 
 	// Process all queued events
 	while (SUCCEEDED(pME->GetEvent(&evCode, &evParam1, &evParam2, 0)))
 	{
-		// Free memory associated with callback, since we're not using it
-		hr = pME->FreeEventParams(evCode, evParam1, evParam2);
-
 		// If this is the end of the clip, reset to beginning
-		if (EC_COMPLETE == evCode)
+		if (EC_COMPLETE == evCode || EC_ERRORABORT == evCode)
 		{
+			if (EC_ERRORABORT == evCode)
+				pMC->Stop();
+
 			switch (gGameState)
 			{
 				case GS_LOGO_MPEG:
@@ -948,11 +955,61 @@ void HandleGraphEvent(void)
 					break;
 				}
 			}
+		}
+	}
+
+	// Free memory associated with callback
+	if (FAILED(pME->FreeEventParams(evCode, evParam1, evParam2)))
+	{
+		gGameState = GS_INIT_ONCE;
+		TRACE("gGameState = GS_INIT_ONCE");
+	}
+}
+#else
+void HandleGraphEvent(void)
+{
+	ASSERT(pME != nil);
+
+	HRESULT hr = S_OK;
+
+	LONG evCode;
+	// We're 99% percent sure this was originally LONG as in Windows samples, so it was going to destroy the stack by trying to store 64 bit pointer into 32 bit.
+	LONG_PTR evParam1, evParam2;
+
+	// Process all queued events
+	while (SUCCEEDED(pME->GetEvent(&evCode, (LONG_PTR*)&evParam1, (LONG_PTR*)&evParam2, 0)))
+	{
+		// Free memory associated with callback, since we're not using it
+		hr = pME->FreeEventParams(evCode, evParam1, evParam2);
+
+		// If this is the end of the clip, reset to beginning
+		if (EC_COMPLETE == evCode)
+		{
+			switch (gGameState)
+			{
+			case GS_LOGO_MPEG:
+			{
+				gGameState = GS_INIT_INTRO_MPEG;
+				TRACE("gGameState = GS_INIT_INTRO_MPEG");
+				break;
+			}
+			case GS_INTRO_MPEG:
+			{
+				gGameState = GS_INIT_ONCE;
+				TRACE("gGameState = GS_INIT_ONCE");
+				break;
+			}
+			default:
+			{
+				break;
+			}
+			}
 
 			pME->SetNotifyWindow((OAHWND)NULL, 0, 0);
 		}
 	}
 }
+#endif
 
 /*
  *****************************************************************************
@@ -1176,7 +1233,11 @@ MainWndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 				case GS_LOGO_MPEG:
 				case GS_INTRO_MPEG:
 				{
-					ASSERT(pMC != nil);
+					// Videos aren't started when game runs in minimized mode, see GS_START_UP
+#ifdef FIX_BUGS
+					if (!pMC)
+						break;
+#endif
 					
 					LONG state;
 					pMC->GetState(10, &state);
@@ -1893,12 +1954,96 @@ void CenterVideo(void)
 
 	JIF(pVW->put_MessageDrain((OAHWND) PSGLOBAL(window)));
 
+	// W7 examples call that + SetFocus is already called in PlayMovieInWindow
+#ifdef FIX_BUGS
+	SetForegroundWindow(PSGLOBAL(window));
+#else
 	SetFocus(PSGLOBAL(window));
+#endif
 }
 
 /*
  *****************************************************************************
  */
+#ifdef MODERN_MOVIE_PLAYER
+void PlayMovieInWindow(int cmdShow, const char* szFile)
+{
+	WCHAR wFile[MAX_PATH];
+	HRESULT hr;
+
+	// Clear open dialog remnants before calling RenderFile()
+	UpdateWindow(PSGLOBAL(window));
+
+	// Convert filename to wide character string
+	MultiByteToWideChar(CP_ACP, 0, szFile, -1, wFile, sizeof(wFile) - 1);
+
+	// Get the interface for DirectShow's GraphBuilder
+	JIF(CoCreateInstance(CLSID_FilterGraph, nil, CLSCTX_INPROC_SERVER,
+		IID_IGraphBuilder, (void**)&pGB));
+
+	// Get the media event interface before building the graph
+	JIF(pGB->QueryInterface(IID_IMediaEventEx, (void**)&pME));
+
+	// Have the graph builder construct the appropriate graph automatically
+	JIF(pGB->RenderFile(wFile, NULL));
+
+	if (SUCCEEDED(hr))
+	{
+		// QueryInterface for DirectShow interfaces
+		JIF(pGB->QueryInterface(IID_IMediaControl, (void**)&pMC));
+		JIF(pGB->QueryInterface(IID_IMediaSeeking, (void**)&pMS));
+
+		// Query for video interfaces, which may not be relevant for audio files
+		JIF(pGB->QueryInterface(IID_IVideoWindow, (void**)&pVW));
+
+		// Have the graph signal event via window callbacks for performance
+		JIF(pME->SetNotifyWindow((OAHWND)PSGLOBAL(window), WM_GRAPHNOTIFY, 0));
+
+		JIF(pVW->put_Owner((OAHWND)PSGLOBAL(window)));
+		JIF(pVW->put_WindowStyle(WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN));
+
+		CenterVideo();
+
+		// Run the graph to play the media file
+		JIF(pMC->Run());
+
+		SetFocus(PSGLOBAL(window));
+	}
+
+	ASSERT(pGB != nil);
+	ASSERT(pVW != nil);
+	ASSERT(pME != nil);
+	ASSERT(pMC != nil);
+
+	if (FAILED(hr))
+		CloseClip();
+}
+/*
+ *****************************************************************************
+ */
+void CloseInterfaces(void)
+{
+	HRESULT hr;
+
+	// Relinquish ownership (IMPORTANT!) after hiding video window
+	if (pVW)
+	{
+//		hr = pVW->put_Visible(0);
+//		hr = pVW->put_Owner(NULL);
+	}
+
+	// Disable event callbacks
+	if (pME)
+		hr = pME->SetNotifyWindow((OAHWND)NULL, 0, 0);
+
+	// Release and zero DirectShow interfaces
+	SAFE_RELEASE(pME);
+	SAFE_RELEASE(pMS);
+	SAFE_RELEASE(pMC);
+	SAFE_RELEASE(pVW);
+	SAFE_RELEASE(pGB);
+}
+#else
 void PlayMovieInWindow(int cmdShow, const char* szFile)
 {
 	WCHAR wFileName[256];
@@ -1911,9 +2056,7 @@ void PlayMovieInWindow(int cmdShow, const char* szFile)
 	MultiByteToWideChar(CP_ACP, 0, szFile, -1, wFileName, sizeof(wFileName) - 1);
 
 	// Initialize COM
-#ifdef FIX_BUGS // will also return S_FALSE if it has already been inited in the same thread
-	CoInitialize(nil);
-#else
+#ifndef FIX_BUGS // will also return S_FALSE if it has already been inited in the same thread
 	JIF(CoInitialize(nil));
 #endif
 
@@ -1956,7 +2099,6 @@ void PlayMovieInWindow(int cmdShow, const char* szFile)
 	if(FAILED(hr))
 		CloseClip();
 }
-
 /*
  *****************************************************************************
  */
@@ -1969,6 +2111,7 @@ void CloseInterfaces(void)
 	SAFE_RELEASE(pVW);
 	SAFE_RELEASE(pGB);
 }
+#endif
 
 /*
  *****************************************************************************
@@ -2158,6 +2301,19 @@ WinMain(HINSTANCE instance,
 	 */
 	ShowWindow(PSGLOBAL(window), cmdShow);
 	UpdateWindow(PSGLOBAL(window));
+
+#ifdef FIX_BUGS
+#ifdef NO_MOVIES
+	if (!gbNoMovies)
+#endif
+	{
+		if (FAILED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED)))
+		{
+			Error("CoInitializeEx failed!\n");
+			exit(1);
+		}
+	}
+#endif
 	
 	{
 		CFileMgr::SetDirMyDocuments();
@@ -2362,7 +2518,7 @@ WinMain(HINSTANCE instance,
 						CoUninitialize();
 #endif
 						
-#ifdef FIX_BUGS
+#if 0 //def FIX_BUGS
 						// draw one frame because otherwise we'll end up looking at black screen for a while if vsync is on
 						RsCameraShowRaster(Scene.camera);
 #endif
@@ -2627,6 +2783,15 @@ WinMain(HINSTANCE instance,
 	SystemParametersInfo(SPI_SETSCREENSAVEACTIVE, TRUE, nil, SPIF_SENDCHANGE);
 
 	SetErrorMode(0);
+
+#ifdef FIX_BUGS
+
+#if defined NO_MOVIES
+	if (!gbNoMovies)
+#endif
+		CoUninitialize();
+
+#endif
 
 	return message.wParam;
 }
